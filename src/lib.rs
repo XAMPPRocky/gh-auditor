@@ -1,124 +1,142 @@
-use snafu::{OptionExt, Snafu};
+//! GH Auditor: Audit and enforce access permission policy for an organisation.
+#![warn(missing_docs)]
+
+mod builder;
+mod config;
+mod error;
+
+pub use builder::AuditorBuilder;
+
 use std::borrow::Cow;
 
-pub type Result<T> = std::result::Result<T, Error>;
+use hyperx::header::TypedHeaders;
+use snafu::{OptionExt, ResultExt};
 
-const GITHUB_AUTH_ENV_KEY: &str = "GITHUB_AUTH_KEY";
+/// Alias `Result` for convenience.
+pub type Result<T> = std::result::Result<T, error::Error>;
 
 /// The auditor of a GitHub organisation.
+#[derive(Debug)]
 pub struct Auditor<'a> {
-    /// The GitHub organisation.
-    org: String,
-    /// The HTTP client.
-    client: Cow<'a, surf::Client<surf::http_client::native::NativeClient>>,
-    /// The current configuration.
-    config: AuditConfig,
     /// The authentication token for GitHub.
     auth_key: String,
+    /// The HTTP client.
+    client: Cow<'a, reqwest::Client>,
+    /// The current configuration.
+    config: config::Config,
+    /// The GitHub organisation.
+    organisation: serde_json::Value,
+
+    has_run_audit: bool,
 }
 
-pub struct AuditorBuilder<'a> {
-    org: String,
-    client: Option<Cow<'a, surf::Client>>,
-    config: AuditConfig,
-    auth_key: Option<String>,
-}
+impl<'a> Auditor<'a> {
+    /// Perform the audit.
+    /// # Errors
+    /// If one of the audits has failed.
+    pub fn audit(&mut self) -> std::result::Result<(), Vec<error::Error>> {
+        self.has_run_audit = false;
+        let mut errors = Vec::new();
 
-impl<'a> AuditorBuilder<'a> {
-    /// Creates a default `AuditorBuilder`.
-    /// # Example
-    /// ```
-    /// use gh_auditor::{Auditor, AuditorBuilder};
-    ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let auditor: Auditor = AuditorBuilder::new("rust-lang").finish()?;
-    /// # }
-    /// ```
-    pub fn new<I: Into<String>>(org: I) -> Self {
-        Self {
-            org: org.into(),
-            client: None,
-            config: AuditConfig::default(),
-            auth_key: None,
+        macro_rules! try_and_collect_errors {
+            ($ex: expr) => {
+                if let Err(error) = $ex {
+                    errors.push(error);
+                }
+            };
+        }
+
+        try_and_collect_errors!(self.audit_2fa());
+        try_and_collect_errors!(self.audit_admin_commit_activity());
+
+        if !self.has_run_audit {
+            errors.push(error::Error::Audit {
+                kind: error::AuditError::NoAuditsRan,
+            });
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
         }
     }
 
-    pub fn auth_key<I: Into<String>>(mut self, auth_key: I) -> Self {
-        self.auth_key = auth_key.into();
-        self
-    }
+    /// Audit that 2fa is enforced for the organisation.
+    fn audit_2fa(&mut self) -> Result<()> {
+        if self.config.enforces_2fa {
+            self.mark_audit("2 Factor Authenication");
+            let enabled = self
+                .organisation
+                .get("two_factor_requirement_enabled")
+                .map(|v| v.as_bool().unwrap_or(false))
+                .unwrap_or(false);
 
-    pub fn client<I: Into<Cow<'a, surf::Client>>>(mut self, client: I) -> Self {
-        self.client = client.into();
-        self
-    }
-
-    pub fn config(mut self, config: AuditConfig) -> Self {
-        self.config = config;
-        self
-    }
-
-    pub fn finish(mut self) -> Result<Auditor> {
-        let auth_key = self
-            .auth_key
-            .or_else(|| std::env::var(GITHUB_AUTH_ENV_KEY))
-            .context(Error::NoAuthKey)?;
-
-        Auditor {
-            org: self.org,
-            client: self.client.unwrap_or_else(surf::Client::new),
-            config: self.config,
-            auth_key,
+            if enabled {
+                log::info!("✅ 2 Factor Authenication required for members");
+            } else {
+                return Err(error::Error::Audit {
+                    kind: error::AuditError::Disabled2Fa,
+                });
+            }
         }
+
+        Ok(())
     }
-}
 
-#[derive(Debug, Snafu)]
-pub enum Error {
-    #[snafu(display("No authentication key for GitHub provided."))]
-    NoAuthKey,
-}
+    fn audit_admin_commit_activity(&mut self) -> Result<()> {
+        if self.config.admins_have_no_commit_activity {
+            self.mark_audit("Admin Commit Activity");
 
-/// A struct configuring which audits the `Auditor` should run.
-pub struct AuditConfig {
-    // Toggles
-    /// Warns if the organisation requires 2 factor authenication for all
-    /// of it's members. (Default: `true`)
-    enforces_2fa: bool,
-    /// Warns if an organisation has admin accounts that have commit activity.
-    /// (Default: `true`)
-    admins_have_no_commit_activity: bool,
-    /// Warns if an organisation has repositories that have unprotected master
-    /// branches. (Default: `false`)
-    all_repos_master_is_protected: bool,
+            let members_url = self
+                .organisation
+                .get("members_url")
+                .and_then(serde_json::Value::as_str)
+                .context(error::MissingGitHubData)?
+                .replace("{/member}", "");
 
-    // Whitelists
-    /// Matches a list of installed applications in a organisation against a
-    /// whitelist, if provided. Uses the URL slug of the app e.g. `foobar`.
-    /// Warns if there are installations other than ones specified **or** There
-    /// is a missing installation from an organisation. (Default: `None`)
-    installed_app_whitelist: Option<Vec<String>>,
-    /// Matches a list of admins in a organisation against a whitelist, if
-    /// provided. Uses the username of person's GitHub account (e.g. `bors`).
-    /// Warns if there are admins other than ones specified **or** There
-    /// are missing admins from an organisation. (Default: `None`)
-    admin_whitelist: Option<Vec<String>>,
-    /// Matches a list of users in a organisation against a whitelist, if
-    /// provided. Uses the username of person's GitHub account (e.g. `bors`).
-    /// Warns if there are users other than ones specified **or** There
-    /// are missing users from an organisation. (Default: `None`)
-    member_whitelist: Option<Vec<String>>,
-}
+            let members = self
+                .client
+                .get(&members_url)
+                .bearer_auth(&self.auth_key)
+                .send()
+                .context(error::Http)?
+                .json::<serde_json::Value>()
+                .context(error::Http)?;
 
-impl Default for AuditConfig {
-    fn default() -> Self {
-        Self {
-            enforces_2fa: true,
-            admins_have_no_commit_activity: true,
-            all_repos_master_is_protected: false,
-            installed_app_whitelist: None,
-            admin_whitelist: None,
-            member_whitelist: None,
+            log::info!("{:#?}", members);
         }
+
+        Ok(())
+    }
+
+    /// Whether the `Auditor` has run at least one auditing procedure.
+    pub fn has_run(&self) -> bool {
+        self.has_run_audit
+    }
+
+    /// Gets a list of all members of an organisation from GitHub.
+    fn member_list(&self, url: &str) -> Result<Vec<serde_json::Value>> {
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(&self.auth_key)
+            .send()
+            .context(error::Http)?;
+
+        let mut next = response
+            .headers()
+            .decode::<hyperx::header::Link>()
+            .context(error::HyperX)?
+            .values();
+
+        Ok(vec![])
+    }
+
+    /// Convenience method to mark that at least one audit was performed on
+    /// the repo.
+    fn mark_audit(&mut self, msg: &str) {
+        log::info!("⏳ Auditing {}", msg);
+        self.has_run_audit = true;
     }
 }
