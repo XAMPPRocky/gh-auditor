@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (@arg repo: +takes_value +required
         "Repository to audit. Requires `admin:read` level permissions")
         (@arg token: -t --token +takes_value
-        "GitHub authenication token.")
+        "GitHub authentication token.")
     )
     .get_matches();
 
