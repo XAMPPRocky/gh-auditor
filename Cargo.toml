@@ -8,10 +8,11 @@ edition = "2018"
 
 [dependencies]
 clap = "2.33.0"
-snafu = { version = "0.6.0", features = ["futures"] }
+snafu = { version = "0.6.0", features = ["backtraces"] }
 reqwest = "0.9.22"
 doc-comment = "0.3.1"
 serde_json = "1.0.44"
 log = { version = "=0.4.8", features = ["kv_unstable"] }
 env_logger = "0.7.1"
 hyperx = "0.15.2"
+serde = "1.0.103"

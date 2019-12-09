@@ -4,7 +4,7 @@ use crate::{config::Config, error, Auditor, Result};
 
 use snafu::*;
 
-const GITHUB_AUTH_ENV_KEY: &str = "GITHUB_AUTH_KEY";
+const GITHUB_AUTH_ENV_KEY: &str = "GITHUB_API_KEY";
 
 /// A builder struct for the `Auditor`. Allows you to configure GitHub
 /// organisation, underlying http client, audit configuration, and

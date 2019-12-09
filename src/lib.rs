@@ -9,7 +9,7 @@ pub use builder::AuditorBuilder;
 
 use std::borrow::Cow;
 
-use hyperx::header::TypedHeaders;
+use hyperx::header::{RelationType, TypedHeaders};
 use snafu::{OptionExt, ResultExt};
 
 /// Alias `Result` for convenience.
@@ -41,6 +41,7 @@ impl<'a> Auditor<'a> {
         macro_rules! try_and_collect_errors {
             ($ex: expr) => {
                 if let Err(error) = $ex {
+                    log::error!("{}", error);
                     errors.push(error);
                 }
             };
@@ -65,7 +66,7 @@ impl<'a> Auditor<'a> {
     /// Audit that 2fa is enforced for the organisation.
     fn audit_2fa(&mut self) -> Result<()> {
         if self.config.enforces_2fa {
-            self.mark_audit("2 Factor Authenication");
+            self.mark_audit("2 Factor Authentication");
             let enabled = self
                 .organisation
                 .get("two_factor_requirement_enabled")
@@ -73,7 +74,7 @@ impl<'a> Auditor<'a> {
                 .unwrap_or(false);
 
             if enabled {
-                log::info!("✅ 2 Factor Authenication required for members");
+                log::info!("✅ 2 Factor Authentication required for members");
             } else {
                 return Err(error::Error::Audit {
                     kind: error::AuditError::Disabled2Fa,
@@ -85,29 +86,50 @@ impl<'a> Auditor<'a> {
     }
 
     fn audit_admin_commit_activity(&mut self) -> Result<()> {
-        if self.config.admins_have_no_commit_activity {
-            self.mark_audit("Admin Commit Activity");
+        if !self.config.admins_have_no_commit_activity {
+            return Ok(());
+        }
+        self.mark_audit("Admin Commit Activity");
 
-            let members_url = self
-                .organisation
-                .get("members_url")
+        let mut members_url = self
+            .organisation
+            .get("members_url")
+            .and_then(serde_json::Value::as_str)
+            .context(error::MissingGitHubData)?
+            .replace("{/member}", "");
+
+        members_url += "?role=admin";
+
+        let members = self.get_all(members_url)?;
+        let mut found_members = Vec::new();
+
+        for member in members {
+            let events_url = member
+                .get("events_url")
                 .and_then(serde_json::Value::as_str)
                 .context(error::MissingGitHubData)?
-                .replace("{/member}", "");
+                .replace("{/privacy}", "");
 
-            let members = self
-                .client
-                .get(&members_url)
-                .bearer_auth(&self.auth_key)
-                .send()
-                .context(error::Http)?
-                .json::<serde_json::Value>()
-                .context(error::Http)?;
+            let has_pushed = self.find(events_url, |e| {
+                e.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == "PushEvent")
+                    .unwrap_or(false)
+            })?;
 
-            log::info!("{:#?}", members);
+            if has_pushed.is_some() {
+                found_members.push(member);
+            }
         }
 
-        Ok(())
+        if found_members.is_empty() {
+            log::info!("✅ No recent push activity on admin accounts.");
+            Ok(())
+        } else {
+            Err(error::Error::Audit {
+                kind: error::AuditError::AdminsHaveCommits(found_members),
+            })
+        }
     }
 
     /// Whether the `Auditor` has run at least one auditing procedure.
@@ -115,22 +137,84 @@ impl<'a> Auditor<'a> {
         self.has_run_audit
     }
 
-    /// Gets a list of all members of an organisation from GitHub.
-    fn member_list(&self, url: &str) -> Result<Vec<serde_json::Value>> {
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(&self.auth_key)
-            .send()
-            .context(error::Http)?;
+    fn find(
+        &self,
+        url: String,
+        pred: impl FnMut(&&serde_json::Value) -> bool + Copy,
+    ) -> Result<Option<serde_json::Value>> {
+        let mut next = Some(url);
 
-        let mut next = response
-            .headers()
-            .decode::<hyperx::header::Link>()
-            .context(error::HyperX)?
-            .values();
+        while let Some(url) = next {
+            let mut response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.auth_key)
+                .send()
+                .context(error::Http)?;
 
-        Ok(vec![])
+            next = response
+                .headers()
+                .decode::<hyperx::header::Link>()
+                .ok()
+                .and_then(|v| {
+                    v.values()
+                        .iter()
+                        .find(|link| {
+                            link.rel()
+                                .map(|rel| rel.contains(&RelationType::Next))
+                                .unwrap_or(false)
+                        })
+                        .map(|l| l.link())
+                        .map(str::to_owned)
+                });
+
+            let json = response.json::<serde_json::Value>().context(error::Http)?;
+
+            let item = json.as_array().and_then(|v| v.iter().find(pred));
+
+            if let Some(item) = item {
+                return Ok(Some(item.clone()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Gets a all entries from a URL using `Link: rel="next";` from GitHub.
+    fn get_all(&self, url: String) -> Result<Vec<serde_json::Value>> {
+        let mut entities = Vec::new();
+        let mut next = Some(url);
+
+        while let Some(url) = next {
+            let mut response = self
+                .client
+                .get(&url)
+                .bearer_auth(&self.auth_key)
+                .send()
+                .context(error::Http)?;
+
+            next = response
+                .headers()
+                .decode::<hyperx::header::Link>()
+                .ok()
+                .and_then(|v| {
+                    v.values()
+                        .iter()
+                        .find(|link| {
+                            link.rel()
+                                .map(|rel| rel.contains(&RelationType::Next))
+                                .unwrap_or(false)
+                        })
+                        .map(|l| l.link())
+                        .map(str::to_owned)
+                });
+
+            let json = response.json::<serde_json::Value>().context(error::Http)?;
+
+            entities.extend_from_slice(&json.as_array().context(error::MissingGitHubData)?);
+        }
+
+        Ok(entities)
     }
 
     /// Convenience method to mark that at least one audit was performed on

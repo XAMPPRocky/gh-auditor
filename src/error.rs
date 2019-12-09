@@ -12,13 +12,13 @@ pub enum Error {
     NoAuthKey,
 
     /// Error occurred while making HTTP request to GitHub.
-    #[snafu(display("Error from HTTP client: {}", source))]
+    #[snafu(display("Error from HTTP client: {}\n\n{}\n", source, backtrace))]
     Http {
         backtrace: snafu::Backtrace,
         source: reqwest::Error,
     },
 
-    /// An error with decoding headers into ¬ types.
+    /// An error with decoding headers into Rust types.
     HyperX {
         source: hyperx::Error,
         backtrace: snafu::Backtrace,
@@ -43,29 +43,33 @@ impl Error {
 #[derive(Debug)]
 pub enum AuditError {
     Disabled2Fa,
-    AdminsHaveCommits,
+    AdminsHaveCommits(Vec<serde_json::Value>),
     NoAuditsRan,
 }
 
 impl fmt::Display for AuditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let warn = match self {
-            Self::Disabled2Fa => {
-                "2 Factor Authentication is not required for \
-                 members of the organisation."
-            }
-            Self::AdminsHaveCommits => {
-                "Admins have commit activity. This is usually an indication \
+        let warn: String = match self {
+            Self::Disabled2Fa => "2 Factor Authentication is not required for \
+                                  members of the organisation."
+                .into(),
+            Self::AdminsHaveCommits(admins) => format!(
+                "Admins ({}) have push activity. This is usually an indication \
                  that admin members are using their accounts for purposes other \
-                 than administration."
-            }
+                 than administration.",
+                admins
+                    .iter()
+                    .filter_map(|v| v.get("login").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
 
-            Self::NoAuditsRan => "No audits were performed.",
+            Self::NoAuditsRan => "No audits were performed.".into(),
         };
 
         let recommendation = match self {
             Self::Disabled2Fa => "Enable 2 Factor as a requirement for members.",
-            Self::AdminsHaveCommits => {
+            Self::AdminsHaveCommits(_) => {
                 "Create seperate accounts for administration access to \
                  the organisation."
             }

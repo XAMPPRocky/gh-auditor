@@ -1,36 +1,41 @@
 use std::io::Write;
 
-macro_rules! try_or_exit {
-    ($expr: expr => $num:literal) => {
-        match $expr {
-            Ok(value) => value,
-            Err(error) => {
-                log::error!("{}", error);
-                std::process::exit(-1)
-            }
+use clap::clap_app;
+
+fn try_or_exit<T>(result: gh_auditor::Result<T>, num: i32) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            log::error!("{}", error);
+            std::process::exit(num)
         }
-    };
+    }
 }
 
 const LOG_LEVEL: &str = "info";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let matches = clap_app!(gh_auditor =>
+        (author: "Erin P. <xampprocky@gmail.com>")
+        (@arg repo: +takes_value +required
+        "Repository to audit. Requires `admin:read` level permissions")
+        (@arg token: -t --token +takes_value
+        "GitHub authenication token.")
+    )
+    .get_matches();
+
     env_logger::from_env(env_logger::Env::default().default_filter_or(LOG_LEVEL))
         .format(|buf, record| writeln!(buf, "{}", record.args(),))
         .init();
 
-    let builder = gh_auditor::AuditorBuilder::new("gh-audit-test");
-    let mut auditor = try_or_exit!(builder.finish() => -1);
+    let mut builder = gh_auditor::AuditorBuilder::new(matches.value_of("repo").unwrap());
 
-    if let Err(errors) = auditor.audit() {
-        for err in errors {
-            if err.is_audit() {
-                log::error!("{}", err);
-            } else {
-                panic!("{}", err);
-            }
-        }
+    if let Some(key) = matches.value_of("token") {
+        builder = builder.auth_key(key);
+    }
+    let mut auditor = try_or_exit(builder.finish(), -1);
 
+    if auditor.audit().is_err() {
         std::process::exit(-2);
     }
 
