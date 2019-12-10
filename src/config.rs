@@ -35,7 +35,7 @@ impl Default for Config {
         Self {
             enforces_2fa: true,
             admins_have_no_commit_activity: true,
-            all_repos_master_is_protected: false,
+            all_repos_master_is_protected: true,
             installed_app_whitelist: None,
             admin_whitelist: None,
             member_whitelist: None,

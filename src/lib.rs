@@ -24,9 +24,9 @@ pub struct Auditor<'a> {
     client: Cow<'a, reqwest::Client>,
     /// The current configuration.
     config: config::Config,
-    /// The GitHub organisation.
+    /// The GitHub organisation in JSON.
     organisation: serde_json::Value,
-
+    /// Whether the auditor ran any audits in the last run.
     has_run_audit: bool,
 }
 
@@ -49,6 +49,7 @@ impl<'a> Auditor<'a> {
 
         try_and_collect_errors!(self.audit_2fa());
         try_and_collect_errors!(self.audit_admin_commit_activity());
+        try_and_collect_errors!(self.audit_all_master_branches_are_protected());
 
         if !self.has_run_audit {
             errors.push(error::Error::Audit {
@@ -65,40 +66,40 @@ impl<'a> Auditor<'a> {
 
     /// Audit that 2fa is enforced for the organisation.
     fn audit_2fa(&mut self) -> Result<()> {
-        if self.config.enforces_2fa {
-            self.mark_audit("2 Factor Authentication");
-            let enabled = self
-                .organisation
-                .get("two_factor_requirement_enabled")
-                .map(|v| v.as_bool().unwrap_or(false))
-                .unwrap_or(false);
-
-            if enabled {
-                log::info!("✅ 2 Factor Authentication required for members");
-            } else {
-                return Err(error::Error::Audit {
-                    kind: error::AuditError::Disabled2Fa,
-                });
-            }
+        if !self.config.enforces_2fa {
+            return Ok(());
         }
+        self.mark_audit("2 Factor Authentication");
 
-        Ok(())
+        let enabled = self
+            .organisation
+            .get("two_factor_requirement_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if enabled {
+            log::info!("✅ 2 Factor Authentication required for members");
+            Ok(())
+        } else {
+            Err(error::Error::Audit {
+                kind: error::AuditError::Disabled2Fa,
+            })
+        }
     }
 
+    /// Audit that all admin accounts have no push activity.
     fn audit_admin_commit_activity(&mut self) -> Result<()> {
         if !self.config.admins_have_no_commit_activity {
             return Ok(());
         }
         self.mark_audit("Admin Commit Activity");
 
-        let mut members_url = self
+        let members_url = self
             .organisation
             .get("members_url")
             .and_then(serde_json::Value::as_str)
             .context(error::MissingGitHubData)?
-            .replace("{/member}", "");
-
-        members_url += "?role=admin";
+            .replace("{/member}", "?role=admin");
 
         let members = self.get_all(members_url)?;
         let mut found_members = Vec::new();
@@ -132,11 +133,58 @@ impl<'a> Auditor<'a> {
         }
     }
 
+    fn audit_all_master_branches_are_protected(&mut self) -> Result<()> {
+        if !self.config.all_repos_master_is_protected {
+            return Ok(());
+        }
+
+        self.mark_audit("Protected master branches.");
+        let mut unprotected_repos = Vec::new();
+
+        let repos_url = self
+            .organisation
+            .get("repos_url")
+            .and_then(serde_json::Value::as_str)
+            .context(error::MissingGitHubData)?;
+
+        for repo in self.get_all(repos_url)? {
+            let branches_url = repo
+                .get("branches_url")
+                .and_then(serde_json::Value::as_str)
+                .context(error::MissingGitHubData)?
+                .replace("{/branch}", "?protected=false");
+
+            let master = self.find(branches_url, |r| {
+                r.get("name").map(|n| n == "master").unwrap_or(false)
+            })?;
+
+            let is_unprotected = master
+                .and_then(|b| b.get("protected").and_then(serde_json::Value::as_bool))
+                .map(|b| !b)
+                .unwrap_or(true);
+
+            if is_unprotected {
+                unprotected_repos.push(repo);
+            }
+        }
+
+        if unprotected_repos.is_empty() {
+            log::info!("✅ All master branches are protected");
+            Ok(())
+        } else {
+            Err(error::Error::Audit {
+                kind: error::AuditError::UnProtectedMasterBranches(unprotected_repos),
+            })
+        }
+    }
+
     /// Whether the `Auditor` has run at least one auditing procedure.
     pub fn has_run(&self) -> bool {
         self.has_run_audit
     }
 
+    /// Find the first entity that matches `pred`, if any match. Goes through
+    /// GitHub's pagination so will make potentially make multiple requests.
     fn find(
         &self,
         url: String,
@@ -180,15 +228,15 @@ impl<'a> Auditor<'a> {
         Ok(None)
     }
 
-    /// Gets a all entries from a URL using `Link: rel="next";` from GitHub.
-    fn get_all(&self, url: String) -> Result<Vec<serde_json::Value>> {
+    /// Gets a all entries across all pages from a resource in GitHub.
+    fn get_all<'b, I: Into<Cow<'b, str>>>(&self, url: I) -> Result<Vec<serde_json::Value>> {
         let mut entities = Vec::new();
-        let mut next = Some(url);
+        let mut next = Some(url.into());
 
         while let Some(url) = next {
             let mut response = self
                 .client
-                .get(&url)
+                .get(&*url)
                 .bearer_auth(&self.auth_key)
                 .send()
                 .context(error::Http)?;
@@ -207,6 +255,7 @@ impl<'a> Auditor<'a> {
                         })
                         .map(|l| l.link())
                         .map(str::to_owned)
+                        .map(Cow::Owned)
                 });
 
             let json = response.json::<serde_json::Value>().context(error::Http)?;

@@ -42,17 +42,19 @@ impl Error {
 
 #[derive(Debug)]
 pub enum AuditError {
-    Disabled2Fa,
+    /// A list of admin users who have recent push activity.
     AdminsHaveCommits(Vec<serde_json::Value>),
+    /// 2 Factor Authenication disabled.
+    Disabled2Fa,
+    /// No audits were actually run.
     NoAuditsRan,
+    /// A list of repositories that have unprotected master branches.
+    UnProtectedMasterBranches(Vec<serde_json::Value>),
 }
 
 impl fmt::Display for AuditError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let warn: String = match self {
-            Self::Disabled2Fa => "2 Factor Authentication is not required for \
-                                  members of the organisation."
-                .into(),
             Self::AdminsHaveCommits(admins) => format!(
                 "Admins ({}) have push activity. This is usually an indication \
                  that admin members are using their accounts for purposes other \
@@ -64,16 +66,33 @@ impl fmt::Display for AuditError {
                     .join(" ")
             ),
 
+            Self::Disabled2Fa => "2 Factor Authentication is not required for \
+                                  members of the organisation."
+                .into(),
+
             Self::NoAuditsRan => "No audits were performed.".into(),
+            Self::UnProtectedMasterBranches(repos) => format!(
+                "Repositories ({}) have unprotected master branches. \
+                 This could lead to accidental data loss.",
+                repos
+                    .iter()
+                    .filter_map(|v| v.get("full_name").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
         };
 
         let recommendation = match self {
-            Self::Disabled2Fa => "Enable 2 Factor as a requirement for members.",
             Self::AdminsHaveCommits(_) => {
                 "Create seperate accounts for administration access to \
                  the organisation."
             }
+            Self::Disabled2Fa => "Enable 2 Factor as a requirement for members.",
             Self::NoAuditsRan => "Adjust your configuration to enable some of audit procedures.",
+            Self::UnProtectedMasterBranches(_) => {
+                "Protect master branches and require all commits are made \
+                 through PRs."
+            }
         };
 
         writeln!(
