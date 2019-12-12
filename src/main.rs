@@ -17,22 +17,23 @@ const LOG_LEVEL: &str = "info";
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = clap_app!(gh_auditor =>
         (author: "Erin P. <xampprocky@gmail.com>")
-        (@arg repo: +takes_value +required
-        "Repository to audit. Requires `admin:read` level permissions")
+        (@arg organisation: +takes_value +required
+        "GitHub Organisation to audit. Requires `admin:read` level permissions")
         (@arg token: -t --token +takes_value
         "GitHub authentication token.")
     )
     .get_matches();
 
     env_logger::from_env(env_logger::Env::default().default_filter_or(LOG_LEVEL))
-        .format(|buf, record| writeln!(buf, "{}", record.args(),))
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
         .init();
 
-    let mut builder = gh_auditor::AuditorBuilder::new(matches.value_of("repo").unwrap());
+    let mut builder = gh_auditor::AuditorBuilder::new(matches.value_of("organisation").unwrap());
 
     if let Some(key) = matches.value_of("token") {
         builder = builder.auth_key(key);
     }
+
     let mut auditor = try_or_exit(builder.finish(), -1);
 
     if auditor.audit().is_err() {
