@@ -13,6 +13,30 @@ meets your criteria.
 - [ ] Admin whitelist
 - [ ] Additional branch protection checks (e.g. requiring verified commits)
 
+## Example Output
+```
+⏳ Auditing 2 Factor Authentication
+❗️ Warning:
+2 Factor Authentication is not required for members of the organisation.
+
+💡 Recommendation:
+Enable 2 Factor as a requirement for members.
+
+⏳ Auditing Admin Commit Activity
+❗️ Warning:
+Admins (XAMPPRocky) have push activity. This is usually an indication that admin members are using their accounts for purposes other than administration.
+
+💡 Recommendation:
+Create seperate accounts for administration access to the organisation.
+
+⏳ Auditing Protected master branches.
+❗️ Warning:
+Repositories (gh-audit-test/test-repo) have unprotected master branches. This could lead to accidental data loss.
+
+💡 Recommendation:
+Protect master branches and require all commits are made through PRs.
+```
+
 ## Install
 ```
 cargo install gh-auditor
