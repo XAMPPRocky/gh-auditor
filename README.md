@@ -13,6 +13,11 @@ meets your criteria.
 - [ ] Admin whitelist
 - [ ] Additional branch protection checks (e.g. requiring verified commits)
 
+## Install
+```
+cargo install gh-auditor
+```
+
 ## Usage
 To run an audit on an organisation you need provide the organisation name and
 a GitHub access token with `admin:read` rights.
