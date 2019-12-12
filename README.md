@@ -24,14 +24,16 @@ Enable 2 Factor as a requirement for members.
 
 ⏳ Auditing Admin Commit Activity
 ❗️ Warning:
-Admins (XAMPPRocky) have push activity. This is usually an indication that admin members are using their accounts for purposes other than administration.
+Admins (XAMPPRocky) have push activity. This is usually an indication that admin
+members are using their accounts for purposes other than administration.
 
 💡 Recommendation:
 Create seperate accounts for administration access to the organisation.
 
 ⏳ Auditing Protected master branches.
 ❗️ Warning:
-Repositories (gh-audit-test/test-repo) have unprotected master branches. This could lead to accidental data loss.
+Repositories (gh-audit-test/test-repo) have unprotected master branches. This
+could lead to accidental data loss.
 
 💡 Recommendation:
 Protect master branches and require all commits are made through PRs.
